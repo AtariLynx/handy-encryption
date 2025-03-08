@@ -1,0 +1,80 @@
+.key filename,size
+
+if <filename>. EQ .
+   skip usage
+endif
+
+if not exists <filename>
+	echo "<filename> - file not found"
+	skip exit
+endif
+
+if <size> EQ 128
+	skip start
+endif
+
+if <size> EQ 256
+	skip start
+endif
+
+if not <size> EQ 512
+	skip usage
+endif
+
+
+lab start
+
+echo >romsize.i "ROMSIZE	.EQ <size>**1024"
+
+buildchk <filename> <size>
+
+asm boot +s
+
+asmstrip boot.bin boot.raw
+asmstrip boot2.bin boot2.raw
+
+premod boot.raw input1
+premod boot2.raw input2
+
+copy input1 RSA:input
+
+echo ""
+echo "Now take the RSA disk to drive 0 of the encryption system"
+echo "and perform the encryption.  When the encryption is done,"
+ask "return the disk to this system and press return"
+
+copy RSA:output output1
+copy input2 RSA:input
+
+echo ""
+echo "Once more, take the RSA disk to drive 0 of the encryption"
+echo "system and perform the encryption.  When the encryption is"
+ask "done, return the disk to this system and press return"
+
+copy RSA:output output2
+postmod output1 boot.raw 3
+postmod output2 boot2.raw 5
+buildrom <filename> <size>
+
+echo ""
+echo "Your ROM file should be updated now.  To test, CARTLOAD"
+echo "on a development system, set location FFF9 to 00, set the"
+echo "GO address to FF80, then do a GO."
+echo ""
+
+skip exit
+
+lab usage
+	echo ""
+	ECHO "Usage:"
+	ECHO "	execute doit filename size"
+	echo ""
+	ECHO "Where filename is the name of the ROM file to encrypt and"
+	ECHO "size is one of 128, 256 or 512 specifying the size (in K)"
+	ECHO "of the ROM"
+	echo ""
+	ECHO "Also, make sure that there is a floppy with volume name RSA"
+	ECHO "in a disk drive before starting the process"
+	echo ""
+
+lab exit

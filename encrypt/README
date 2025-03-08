@@ -1,0 +1,50 @@
+
+
+			HANDY CARTRIDGE ENCRYPTION SYSTEM
+
+
+	This disk contains the current system for encrypting a boot block for
+a ROM file that will allow a cartridge to be made that will run on the Lynx.
+The program that actually performs the RSA part of the encryption, and the
+separate pieces of the RSA key number are not included on this disk.
+
+	To use this disk, either copy its contents to a directory on a hard
+disk, or insert it into a floppy drive and CD to it.  You will also need a
+floppy disk with the volume name RSA;  if you don't have one, insert a blank
+disk into drive 0 of your computer and type:
+		FORMAT drive df0: name RSA
+at the CLI prompt.  To encrypt a ROM file, type:
+		EXECUTE DOIT <filename> <size>
+at the CLI prompt, where <filename> is name of the ROM file to encrypt, and
+size is one of 128, 256 or 512 specifying the size (in K) of the ROM file.
+Then just follow directions as they are given on the screen.
+
+	The source to the separate pieces of the process are also included on
+this disk.  The following files are made from the corresponding source files:
+		BUILDCHK - buildchk.c
+		PREMOD	 - premod.c
+		POSTMOD	 - postmod.c
+		BUILDROM - main.c, buildrom.c, global.c, rombin.h, eglobal.c
+
+	BUILDCHK is a program that scans the image file, locates the directory
+entries for the first two files and writes the information to romdir.i , and
+simulates the hash code security process performed in the boot block to
+generate the check string and write it to checkstring.src .
+
+	PREMOD takes a raw binary file, and prepares the data to be run
+through the RSA encryption program.
+
+	POSTMOD takes the output of the RSA encryption program, and prepares
+it for inclusion in the boot block.
+
+	BUILDROM takes the files boot.raw and boot2.raw (the results of the
+encryption process) and writes them over the beginning of the ROM file.
+
+	MAKEFILE contains directions to build the above C programs, assuming
+an Aztec C environment.  The C programs assume 32 bit integers.
+
+	The file boot.src assembles to create the code to be encrypted in the
+boot blocks.  It includes the system equates files harddefs.i and cartdefs.i ,
+and the generated files romsize.i, romdir.i, and checkstring.src .
+
+

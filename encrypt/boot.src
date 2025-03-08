@@ -1,0 +1,671 @@
+; Wednesday 11-Apr-90 14:22:47
+* === boot.src ==============================================================
+* 
+* Handy Boot Code Main Routine  -  Handy ROM
+* 
+* Confidential and Proprietary
+* Copyright (C) 1989, Epyx, Inc.
+* 
+* Date		Name		Description
+* ---------	--------------	----------------------------------------------
+* 10-Apr-90	SHL		Rewritten for smaller size, improved speed,
+*				and larger cartridge support
+* 20-Feb-90	SHL		Fixed bug causing ROM power to be disabled
+*				during reads
+* 23 May 89	=RJ Mical=	Created this file!
+* 
+* ===========================================================================
+
+
+
+;DEBUG		.EQ 1
+;BUILDCHECK	.EQ 1
+
+	#IFNDEF DEBUG
+	  #IFNDEF BUILDCHECK
+REAL_VERSION .EQ 1
+	  #ENDIF
+	#ENDIF
+
+
+
+
+* ===========================================================================
+
+	.LIST OFF
+
+		.IN harddefs.i
+
+	.LIST ON
+
+		.IN romsize.i
+		.IN cartdefs.i
+		.IN romdir.i
+
+
+
+	#IF ROMPAGESIZE <512
+	  .ECHO ""
+	  .ECHO "ERROR:  This file not set up to handle page size < 512"
+	  .ECHO ""
+	  .END
+	#ENDIF
+
+	#IFNDEF ROM_SCREENBLANK_VALUE
+ROM_SCREENBLANK_VALUE	.EQ 0
+	#ENDIF
+
+
+
+* ===========================================================================
+
+R_PAGE		.EQ 0
+R_OFFSET	.EQ 1
+R_DEST		.EQ 3
+R_SIZE		.EQ 5
+R_ENTRY_SIZE	.EQ 7
+
+
+HASH_COUNT	.EQ 2
+NUMSHUFFLES	.EQ 8
+BUFFERLENGTH	.EQ 32	; 256 bits
+RESULTLENGTH	.EQ BUFFERLENGTH/2	; 128 bits
+
+SIZEKEY		.EQ 50
+
+BASE_ORG	.EQ $0200
+;CHECK_ORG	.EQ BASE_ORG+SIZEKEY*5-RESULTLENGTH-1
+CHECK_ORG	.EQ BASE_ORG+SIZEKEY*3-RESULTLENGTH-1
+BASE2_ORG	.EQ $0300
+CHECK2_ORG	.EQ BASE2_ORG+SIZEKEY*5-1
+DISPLAY_ORG	.EQ $0400	; Must be $xx00
+
+ENDADDRESS	.EQ DISPLAY_ORG+$2000
+
+
+SETCARTBLOCK	.EQ $FE00
+RSA_LOAD	.EQ $FE4A
+
+
+
+* ===========================================================================
+* ===                       =================================================
+* ===  Zero-Page Variables  =================================================
+* ===                       =================================================
+* ===========================================================================
+
+		.OR $0000
+
+* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+* These are the variables as declared by the Mikey ROM code
+
+* Note!  Dest is presumed to be at memory location zero
+Dest		.DS	2
+
+checksum	.ds 1		; checksum used during decryption
+
+powerdowncount	.DS 2
+
+ptr		.ds 2
+num_blocks	.ds 1
+
+bitcount	.DS 1		; temporary counter
+bytecount	.DS 1		; temporary counter
+temp0		.DS 1
+acc0		.DS 2		; accumulator pointers
+acc1		.DS 2
+input1		.DS 2		; pointer to multiplicand
+scratch0	.DS SIZEKEY	; scratch areas must be in zero page
+scratch1	.DS SIZEKEY
+scratch2	.DS SIZEKEY
+inputcode	.DS SIZEKEY
+encrypted_area	.EQ inputcode
+
+* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+		.OR $0000
+
+tickler		.DS 1
+
+ERASE_START
+
+buffer0		.DS RESULTLENGTH
+buffer1		.DS BUFFERLENGTH
+
+hashpage	.ds 1
+hashsubpage	.ds 1
+
+ERASE_END
+
+random		.DS 1
+count		.DS 2
+
+directory	.DS R_ENTRY_SIZE
+
+hashloop	.DS 1
+
+skipcount2	.DS 1
+
+
+
+* ===========================================================================
+* ===========================================================================
+
+	#MACRO ECHO_VALUE
+		.ECHO "Value of ?0 is ?%d0 ($?%x0)"
+	#ENDMACRO
+
+
+* ===========================================================================
+* ===========================================================================
+
+		.OR BASE_ORG
+		.RU *
+
+	#IFDEF REAL_VERSION
+* Have the ROM load up RSA-encoded stuff starting at BASE2_ORG
+
+		;-- This branch is here to allow the RSA decoding of a second
+		;-- block of data.  After the RSA, the ROM code jumps to
+		;-- BASE_ORG.  After the first RSA, this safe branch 
+		;-- is taken.  Then the branch offset is later modified to 
+		;-- skip the loading and RSA'ing of the second page
+		BRA .10		; self mod
+.10
+
+	JSR ClearPalette
+
+		;-- Set up the RSA pointer to the decode destination
+		STZ ptr
+;		LDA #>BASE2_ORG
+;		STA ptr+1
+		inc ptr+1	; assumes BASE2_ORG is BASE_ORG+$100
+
+		LDA #RESTLESS	; Make sure ROM is powered
+		STA IODAT
+
+		JMP RSA_LOAD
+bootContinue
+	#ELSE
+		stz MAPCTL	; force Mikey to be in memory
+		lda #3		; set IODIR the way Mikey ROM does
+		sta IODIR
+	#ENDIF ; of #IFDEF REAL_VERSION
+
+		;-- Read the sprite display file
+		ldy #6
+		JSR ReadFile
+
+		;-- Initialize and fire off the sprite engine
+		LDX #SETVALS_COUNT
+.B0		  LDA SuzyValues-1,X
+		  LDY SuzyOffsets-1,X
+		  STA $FC00,Y		; SUZY lives at $FC00
+		  DEX
+		 bne .B0		; X will exit with zero
+
+		;-- Catch a snooze, letting Suzy drive the bus
+		STZ CPUSLEEP
+
+* Note:  I'm not clearing Suzy's Done-Acknowledge flag.  This presumes that
+* all programs will clear it before starting, which all good programs do
+;???		STZ SDONEACK
+
+		;-- Alright, finally display this picture
+;		STZ DISPADRL		; this is true from MIKEY ROM
+		LDA #>DISPLAY_ORG
+		STA DISPADRH
+
+
+		;-- Copy the palette to the hardware registers
+		LDY #31
+.50		  LDA FILE0ADDRESS,Y
+		  STA GREEN0,Y
+		  DEY
+		 BPL .50
+
+		;-- Initialize sbox with values from 0 to 255
+;		LDX #0		; X = zero from above
+.0		  TXA
+		  STA sbox,X
+		  INX
+		 BNE .0
+
+
+		jmp MakeSbox
+
+
+* ===========================================================================
+
+
+
+file01dir
+	.BY FILE0PAGE
+	.WO FILE0OFFSET,FILE0ADDRESS,FILE0SIZE
+
+	.BY FILE1PAGE
+	.WO FILE1OFFSET,FILE1ADDRESS,FILE1SIZE
+
+
+
+* ===========================================================================
+* ===                      ==================================================
+* ===  Page 1 Subroutines  ==================================================
+* ===                      ==================================================
+* ===========================================================================
+
+
+ClearPalette
+* ===========================================================================
+		ldx #31		; clear palette to black
+.50		  stz GREEN0,x
+		  dex
+		 BPL .50
+
+		;-- Turn off serial noise as early as possible
+		LDA #TXOPEN
+		STA SERCTL
+
+	#IFDEF REAL_VERSION
+;TEMP		;-- Set up the return branch 
+		LDA #bootContinue-BASE_ORG-2
+		STA BASE_ORG+1			; Self-modify 
+	#ENDIF ; of #IFDEF REAL_VERSION
+
+		RTS
+
+
+copydir
+	ldx #7
+.00	  lda file01dir,y
+	  sta directory-1,x
+	  dey
+	  dex
+	 bne .00
+
+	rts
+
+
+
+
+* ===========================================================================
+* ===========================================================================
+
+
+SuzyValues
+		.BYTE $01
+		.BYTE $20		; set NO_COLLIDE in SPRSYS
+		.BYTE >DISPLAY_ORG
+		.BYTE <DISPLAY_ORG	; should be left from MIKEY ROM
+		.BYTE $01
+		.BYTE $00
+		.BYTE $00
+		.BYTE >{FILE0ADDRESS+32}
+		.BYTE <{FILE0ADDRESS+32}
+;		.BYTE $7F		; almost any value $0000-$00ff will do
+;		.BYTE $7F
+
+
+SuzyOffsets
+		.BYTE <SPRGO
+		.BYTE <SPRSYS		; set NO_COLLIDE in SPRSYS
+		.BYTE <VIDBASH
+		.BYTE <VIDBASL		; should be left from MIKEY ROM
+		.BYTE <SUZYBUSEN
+		.BYTE <HOFFL
+		.BYTE <VOFFL
+		.BYTE <SCBNEXTH
+		.BYTE <SCBNEXTL
+		.BYTE <HSIZOFFL
+		.BYTE <VSIZOFFL
+
+SETVALS_COUNT	.EQ *-SuzyOffsets	; number of values to INIT in loop
+
+
+
+random1		.BY $47			; initialized variable
+random2		.BY $39			; initialized variable
+
+
+
+* ===========================================================================
+
+	#IFDEF REAL_VERSION
+
+free1 .= CHECK_ORG-*
+
+	  ECHO_VALUE free1
+
+		.OR CHECK_ORG
+	#ENDIF
+
+checkstring
+		.IN checkstring.src ; Must be exactly RESULTLENGTH bytes long
+
+
+
+	#IFDEF REAL_VERSION
+* Last byte must be zero
+		.BYTE	0
+		.TF boot2.bin
+		.OR BASE2_ORG
+	#ENDIF
+
+* ===========================================================================
+* ===========================================================================
+* ===========================================================================
+
+
+* ===========================================================================
+* ===                      ==================================================
+* ===  Page 2 Subroutines  ==================================================
+* ===                      ==================================================
+* ===========================================================================
+
+
+ReadFile
+* ===========================================================================
+
+		jsr copydir
+
+		;-- Complement the file size bytes, to facilitate bounds check
+		inc directory+R_SIZE
+		inc directory+R_SIZE+1
+
+setCartAddress
+		;-- Set the cart address to the data of this file
+		LDA directory+R_PAGE
+		jsr SETCARTBLOCK
+
+		ldx directory+R_OFFSET
+		inx
+		ldy directory+R_OFFSET+1
+		iny
+		JSR SetCartOffset
+
+	sec			; get complement of bytes remaining in page
+;	lda directory+R_OFFSET
+;	sbc #<ROMPAGESIZE		
+;	tax
+	ldx directory+R_OFFSET	; no need to do above subtract of 0
+	lda directory+R_OFFSET+1
+	sbc #>ROMPAGESIZE
+	tay
+
+readDataLoop	;-- While there's still data to read, do the loop
+		dec directory+R_SIZE
+		BNE .10
+		dec directory+R_SIZE+1
+		BEQ dataDone
+.10
+		;-- Get the next byte and bump the RAM address
+		LDA RCART_0
+		STA (directory+R_DEST)
+		INC directory+R_DEST
+		BNE .20
+		INC directory+R_DEST+1
+
+		;-- Bump the cart page offset counter
+.20		INX
+		BNE readDataLoop
+		INY
+		BNE readDataLoop
+
+		;-- Reached end of page, so go to next
+		INC directory+R_PAGE
+
+		;-- Indicate that there's a whole page to read
+		STZ directory+R_OFFSET
+		STZ directory+R_OFFSET+1
+		BRA setCartAddress
+
+dataDone	RTS
+
+
+
+* ===========================================================================
+
+SetCartOffsetLoop
+		    lda RCART_0
+
+SetCartOffset
+.05		    dex
+		   BNE SetCartOffsetLoop
+		  dey
+		 BNE SetCartOffsetLoop
+
+		RTS
+
+
+
+
+MakeSbox
+* Check that the data is good
+* Perform the oneway hash function on the data and check that
+* the result matches the signature.  
+* If the signature matches, the routine returns.  If not, it loops forever.
+
+* Make sbox, the special 256 byte permutation table.
+* The table will have values from 0 to 255 all shuffled around
+
+		;-- Initialize the poly-counter random number
+		LDA #$12
+		STA random
+;		LDA #$47	; pre-initialized variables
+;		STA random1
+;		LDA #$39
+;		STA random2
+
+		;-- For NUMSHUFFLES times, pass through the entire array, 
+		;-- swapping the nth entry with a random entry
+
+		;-- Do once pass through sbox, swapping entries
+;		LDX #0		; X = zero from above
+
+		;-- Get a random index, use it to swap the X'th sbox entry
+* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+* Polynomial count pseudo-random generator, period 2**24-2
+.2		    LDA random
+		    LSR a
+		    LSR a
+		    SBC random
+		    LSR a
+		    ROL random1
+		    ROL random2
+		    ROR random
+		    LDA random
+		    ADC random1
+		    EOR random2
+* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+		    TAY			; Use this as the swap index
+		    LDA sbox,X		; and do the swap
+		     PHA
+		      LDA sbox,Y
+		      STA sbox,X
+		     PLA
+		    STA sbox,Y
+	
+		    INX
+		   BNE .2
+
+		  DEC sboxloop
+		 BNE .2
+
+
+LoadAndHash
+* ===========================================================================
+* Loads 256 bytes from the page specified in Y, hashes page into the buffer
+* 
+* ON ENTRY:
+*   - Y defines cart page to be loaded
+*   - hashcontrol defines the number of passes for the check
+
+	ldx #ERASE_END-ERASE_START
+.10	  stz buffer0-1,x	; start off initializing buffer0 and buffer1
+	  dex
+	 bne .10
+
+.f0	  lda hashpage
+	  jsr SETCARTBLOCK
+
+	  lda JOYSTICK		; clear screen if user pressed stick
+	  beq .f1
+	  jsr ClearPalette
+
+.f1	  lda #256/RESULTLENGTH
+	  sta hashsubpage
+
+.f2	      sec
+	      ldx #RESULTLENGTH
+.f3		lda RCART_0	; get byte from cart
+ #IF ROMPAGESIZE/256>2
+		ldy #{ROMPAGESIZE/256}-1
+ #ENDIF
+.f4		  adc RCART_0	; combine with next bytes
+ #IF ROMPAGESIZE/256>2
+		  dey
+		 bne .f4
+ #ENDIF
+		sta buffer1+RESULTLENGTH-1,x
+		dex
+	       bne .f3		; loop exits with x = 0
+	      lsr skipcount
+ #IF ROMSIZE=128*1024
+ 	      ror skipcount2
+ #ENDIF
+	     bne .4
+
+
+
+* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+* Do the actual hash of the current buffer
+
+	    LDA #HASH_COUNT
+	    STA hashloop
+
+	    TXA			; initialize A to zero
+	    STZ tickler
+	    CLC
+.1	      LDX #BUFFERLENGTH-1	; Count through buffer
+.0		ADC buffer1,X
+		STA buffer1,X
+		ADC tickler
+		TAY
+		LDA sbox,Y
+		INC tickler
+		DEX
+	       BPL .0
+	      DEC hashloop
+	     BNE .1
+
+	    LDX #RESULTLENGTH	; Exclusive-or with original buffer, 
+.3	      LDA buffer0-1,X	; and copy back over first n bytes
+	      EOR buffer1-1,X
+	      STA buffer0-1,X
+	      STA buffer1-1,X
+	      DEX
+	     BNE .3
+* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+.4	    dec hashsubpage
+	   bne .f2
+	  inc hashpage
+	 bne .f0
+
+
+terminate
+		;-- OK, hash string created.  
+		;-- If we're building the checkstring, then break here
+		;-- else check the hash with the required value
+	#IFDEF BUILDCHECK
+		.BY $13
+		BRK
+	#ELSE 
+		LDX #RESULTLENGTH-1	; Check final result to see 
+check		  LDA buffer0,X		; if it checks out
+		  CMP checkstring,X	; If value isn't equal
+fail		  BNE fail		; loop here for a really long time
+		  DEX
+		 BPL check
+
+* Hash checks out OK!
+* Clear the display to a shade of grey, then load and execute file 1
+
+		JSR ClearPalette
+
+		ldy #R_ENTRY_SIZE*2-1
+		JSR ReadFile
+
+		JMP (file01dir+R_ENTRY_SIZE+R_DEST)
+	#ENDIF
+
+
+
+
+* ===========================================================================
+* ===                       =================================================
+* ===  Preinitialized Data  =================================================
+* ===                       =================================================
+* ===========================================================================
+
+
+skipcount
+	#IF ROMSIZE=128*1024
+		.BY %00111111	; rotate right 13 times
+	#ENDIF
+	#IF ROMSIZE=256*1024
+		.BY %11111111	; rotate 7 times
+	#ENDIF
+	#IF ROMSIZE=512*1024
+		.BY %00011111	; rotate 4 times
+	#ENDIF
+	#IF *=skipcount
+		ECHO "ERROR: ROMSIZE must be one of 128k, 256k or 512k"
+	#ENDIF
+
+
+sboxloop	.BY NUMSHUFFLES		; initialized variable
+
+
+
+* ===========================================================================
+* ===========================================================================
+* ===========================================================================
+
+
+
+
+* Last byte must be zero
+	#IFDEF REAL_VERSION
+free2	.= CHECK2_ORG-*
+
+	  ECHO_VALUE free2
+
+free	.= free1+free2
+
+	  ECHO_VALUE free
+
+		.OR CHECK2_ORG
+		.BYTE	0
+nextfree .= SIZEKEY-free
+
+	#ELSE
+	  #IF * > $0400
+		.ECHO ""
+		.ECHO "HEY:  GOES GREATER THAN $0400"
+		.ECHO ""
+temp .= *-$0400
+	  #ENDIF
+	#ENDIF ; of #IFDEF REAL_VERSION
+
+
+* ===========================================================================
+		.OR ENDADDRESS
+sbox		.DS $100
+
+
