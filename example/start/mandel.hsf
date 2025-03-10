@@ -1,0 +1,7 @@
+	.IN cartdefs.i
+
+	FILE 0
+	BIN title.bin
+
+	FILE 1
+	BIN mandel.bin
