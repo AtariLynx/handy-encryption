@@ -1,0 +1,2370 @@
+
+* === mandel.src ============================================================
+* 
+* Mandelbrot demo for Handy  --  Handy Software
+* 
+* Confidential and Proprietary
+* Copyright (C) 1989, Epyx, Inc.
+* 
+* Date		Name		Description
+* ---------	--------------	----------------------------------------------
+* 7-Mar-90	SHL		Remove DISPLAY_ON call
+* 9-Feb-90	SHL		Updated for compatibility with 1.1 release
+* Aug 89	SHL		Created this file
+* 
+* ===========================================================================
+
+*
+* This program is a Mandelbrot set and Julia set explorer.  48 bit fixed-point
+* arithmetic is used (8 bit integer, 40 bit fraction).
+*
+* When running, there are three user interface modes.
+*
+* Normal mode - the program is calculating and updating the Mandelbrot set
+* Zoom box mode - the program shows a box 1/2 screen height and width
+* Menu mode - the program has a menu display up with control parameters
+*
+* In normal mode, pressing PAUSE enters Menu mode, any other joystick or button
+* input enters Zoom box mode.
+*
+* In zoom box mode, pressing the outer button zooms in.  The area inside the
+* zoom box expands to fill the screen, and the program returns to normal mode.
+* Pressing the inner button zooms out.  The screen shrinks into the zoom box,
+* and the program returns to normal mode.  Pressing any direction on the
+* joystick moves the zoom box.  Pressing Option 1 cancels and returns to normal
+* mode.  Pressing Option 2 changes the color cycle mode to the next of three
+* states:  no cycle -> cycling in -> cycling out.  Pressing PAUSE switches to
+* menu mode.  No input for about 4 seconds switches back to normal mode.
+*
+* In menu mode, moving the joystick moves the cursor.  Pressing the outer
+* button increments the digit under the cursor, pressing the inner button
+* decrements the digit under the cursor.  Incrementing and decrementing carry
+* through to the digits to the left of the cursor.  Pressing Option 1 returns
+* to normal mode.  Pressing Option 2 toggles between Mandelbrot and Julia sets.
+* Holding PAUSE and pressing Option 1 resets to the original viewing coordinate
+* of the set.  Holding PAUSE and pressing Option 2 copies the X,Y coordinate to
+* the Julia set index, enables Julia set mode and swithes to the original
+* viewing coordinates.
+*
+* All numbers in the menu are displayed in hex.  A period separates the integer
+* portion from the fraction in the 48 bit numbers. X,Y is the coordinate of the
+* upper left corner of the screen, with X increasing to the right, and Y
+* increasing down the screen.  STEP is the increment in value between adjacent
+* pixels.  DEPTH is the number of iterations before giving up.  PALETTE selects
+* one of the built in palettes in the program to display the set.  CYCLE RATE
+* is the number of 60ths of seconds between steps when cycling the colors.
+* XJUL,YJUL is the index selecting the particular Julia set.
+*
+
+;==============================================================================
+
+	.65C02		; Select processor for the HANDY
+
+EOF_USER .EQ 1		; We use EOF macros
+
+BRK_USER .EQ 1		; we wanna have breaks for debugging
+
+FONT_TYPE .EQ HPR_DIGIT+HPR_UPPER+HPR_PUNC	; for HPRINT
+FONT_HEIGHT .EQ	7
+
+;==============================================================================
+
+; Standard HANDY includes and macros
+
+	.IN 6502:include/monitor.i
+	.IN 6502:include/harddefs.i
+	.IN 6502:include/sprite.i
+	.IN 6502:include/hprint.i
+
+	.IN 6502:macros/zpage.mac
+	.IN 6502:src/syszpage.src
+
+	.IN 6502:macros/sys.mac
+	.IN 6502:macros/sprite.mac
+	.IN 6502:macros/display.mac
+	.IN 6502:macros/controls.mac
+	.IN 6502:macros/handymath.mac
+	.IN 6502:macros/hprint.mac
+
+
+;==============================================================================
+
+; Absolute equates
+
+COUNTMAX .EQ 256		; initial value for iteration depth
+
+
+;==============================================================================
+
+; useful code macros
+
+	#MACRO STRUCT		; reset PC for structure template definitions
+LTemp	.= *
+	.ORG 0
+	#ENDM
+
+	#MACRO ENDSTRUCT	; restore PC after structure definition
+	.ORG LTemp
+	#ENDM
+
+;==============================================================================
+
+; Zero page variables
+
+
+	BEGIN_ZPAGE
+
+MYZPSTART
+
+ind0		.DS 2	; general indirects
+ind1		.DS 2
+
+temp0		.DS 1	; general temporaries
+temp1		.DS 1
+
+stick		.DS 1	; current reading of joystick
+edgestick	.DS 1	; current positive edge transitions of joystick
+switch		.DS 1	; current reading of switches
+
+xpos		.DS 1	; screen coordinate of zoom frame
+ypos		.DS 1
+
+xindex		.DS 1	; screen coordinate of current pixel being worked on
+yindex		.DS 1
+
+count		.DS 2	; current iteration depth count
+countmod15	.DS 1	; current depth count mod 15
+depth		.DS 2	; depth to which calculations are carried
+
+x0		.DS 6	; Mandelbrot coordinate of current working pixel
+y0		.DS 6
+xn		.DS 6	; current calculation of Mandelbrot iteration
+yn		.DS 6
+xsquare		.DS 6	; intermediate calculation values
+ysquare		.DS 6
+
+factor1		.DS 6	; parameters for the 48x48 multiply routine
+factor2		.DS 6
+product		.DS 12
+negflag		.DS 1	; internal flag for multiply routine
+
+acorner		.DS 6	; Mandelbrot coordinate of upper-left corner
+bcorner		.DS 6
+step		.DS 6	; coordinate step increment between pixels
+xjul		.DS 6	; Julian set determinate
+yjul		.DS 6
+
+juliaflag	.DS 1	; flag for whether we're in Mandelbrot or Julia sets
+
+input		.DS 1	; joystick inputs monitored by EOF interrupt
+edgeinput	.DS 1
+edgeinputlatch	.DS 1
+
+modeflag	.DS 1	; flag to signal return to calculation mode
+
+cyclemode	.DS 1	; color cycling mode
+cyclemodesave	.DS 1	; backup of cyclemode
+cyclecount	.DS 1	; countdown register for color cycling
+cyclerate	.DS 1	; speed of color cycling
+
+frame		.DS 1	; vblank frame count
+
+updateflag	.DS 1	; countdown flag, signals time to upate display
+
+palettenum	.DS 1	; which palette we are using
+
+whichdigit	.DS 1	; which digit is the menu currently over
+
+MYZPEND
+
+
+	END_ZPAGE
+
+;==============================================================================
+
+	.OR $0200
+
+;==============================================================================
+
+; Absolute address variables
+
+
+	.ALIGN 4
+screen0		.DS DISPLAY_BUFSIZE	; screen buffers
+screen1		.DS DISPLAY_BUFSIZE
+
+
+interrupt_buffer .DS 16			; timer interrupt vectors
+
+bigsprite	.DS 82*102+1		; screen sized literal sprite
+
+textbuffer	.DS 20*FONT_HEIGHT+1	; literal text sprite imagery buffer
+
+
+AbsVarsEnd
+
+;==============================================================================
+
+
+start	.RUN
+	jmp begin
+
+
+;==============================================================================
+
+; Standard handy source include files
+
+	.IN 6502:src/sysdata.src
+	.IN 6502:src/hprint.src
+	.IN 6502:src/sys.src
+	.IN 6502:src/display.src
+
+
+;==============================================================================
+
+; Handy system character set stuff
+
+	HPRFONT plain
+
+	HPR_CHARSET
+
+;==============================================================================
+
+; Code segment
+
+
+
+begin
+	sei
+	cld
+	ldx #$ff
+	txs
+
+	jsr erasezpage
+
+	jsr setpalette
+
+	INITSYS
+
+	INITINT	interrupt_buffer,rts0	; for when we want our own vector
+
+	lda #<$3000		; for Howard board
+	sta $fffa
+	lda #>$3000
+	sta $fffb
+
+	SETDBUF screen0,screen1
+	SETDISP_60
+	INITEOF
+
+	lda FrameEndExit+1
+	sta myeofendexit+1
+	lda FrameEndExit+2
+	sta myeofendexit+2
+
+	lda #<myeof
+	sta FrameEndExit+1
+	lda #>myeof
+	sta FrameEndExit+2
+
+	lda #$f3		; replaces what was in INITSUZY
+	sta SPRINIT
+	lda #$80
+	sta HSIZOFFL
+	stz HSIZOFFH
+	sta VSIZOFFL
+	stz VSIZOFFH
+	lda #1
+	sta SUZYBUSEN
+	stz SDONEACK
+
+	lda #0
+	HOFF8
+	VOFF8
+
+	lda SPRSYS_RAM
+	ora #NO_COLLIDE+ACCUMULATE
+	and #<~SIGNMATH
+	sta SPRSYS_RAM
+	sta SPRSYS
+
+	jsr initbigsprite
+
+	jsr do.dbuf
+
+	INITLIT textbuffer,20
+
+	cli
+
+	jsr initbrot
+
+loop
+	  jsr dopoint		; normal mode loop
+	  jsr incpoint
+
+	  lda updateflag
+	  bne .0
+
+	  jsr showbigsprite
+	  jsr do.dbuf
+	  lda #16
+	  sta updateflag
+
+.0	  lda edgeinputlatch
+	 beq loop
+
+	lda #$ff
+	sta stick
+	stz modeflag
+
+loop1
+	  GETSWITCH		; zoom box mode loop
+	  bit #PAUSE_SWITCH
+	  bne .0
+	  inc modeflag
+	  jsr getinput
+	  jsr showresult
+
+	  jsr do.dbuf
+	  WAITEOF
+	  lda modeflag
+	 bne loop1
+
+	stz edgeinputlatch
+	bra loop
+
+.0	stz modeflag
+	lda cyclemode
+	sta cyclemodesave
+
+loop2
+	  inc modeflag		; menu mode loop
+	  jsr menuinput
+	  jsr showmenu
+
+	  jsr do.dbuf
+	  WAITEOF
+	  lda modeflag
+	 bne loop2
+
+	stz edgeinputlatch
+	lda cyclemodesave
+	sta cyclemode
+	bra loop
+
+
+
+erasezpage
+	ldx #MYZPSTART
+.0	  stz 0,x
+	  inx
+	  cpx #MYZPEND
+	 bne .0
+
+	rts
+
+
+do.dbuf
+	DBUF_DISPLAY
+	rts
+
+
+getinput
+	GETJOY
+	tay
+	eor #$ff
+	ora stick
+	eor #$ff
+	sta edgestick
+	tya
+	sta stick
+
+;	lda stick
+	beq .aa
+	lda #1
+	sta modeflag
+
+.aa	ldx xpos
+	ldy ypos
+
+	lda stick
+	bit #JOY_LEFT
+	beq .00
+	dex
+	bpl .00
+	ldx #0
+
+.00	bit #JOY_RIGHT
+	beq .10
+	inx
+	cpx #160-80
+	bcc .10
+	ldx #160-80
+
+.10	bit #JOY_UP
+	beq .20
+	dey
+	bpl .20
+	ldy #0
+
+.20	bit #JOY_DOWN
+	beq .30
+	iny
+	cpy #102-51
+	bcc .30
+	ldy #102-51
+
+.30	stx xpos
+	sty ypos
+
+	lda edgestick
+	bit #OPTION1_BUTTON	; if user hits option1, cancel
+	beq .40
+	stz modeflag
+
+.40	bit #OPTION2_BUTTON
+	beq .50
+	inc cyclemode
+	ldx cyclemode
+	cpx #3
+	bcc .50
+	jsr setpalette
+
+.50	lda edgestick
+	bit #OUTER_BUTTON	; if user hits outer button, zoom in
+	beq .60
+	jsr zoom.in
+
+.60	lda edgestick
+	bit #INNER_BUTTON	; if user hits inner button, zoom out
+	beq .70
+	jsr zoom.out
+
+.70
+
+
+rts0	rts
+
+
+zoom.in
+	lda step		; if already at minimum step size, don't do it
+	and #<{~1}
+	ora step+1
+	ora step+2
+	ora step+3
+	ora step+4
+	ora step+5
+	bne .0
+	rts
+
+.0	lda #0
+.1	  sta temp0
+	  asl a
+	  tax
+	  lda scales,x
+	  sta bigscb2+SCB_HSIZE
+	  sta bigscb2+SCB_VSIZE
+	  lda scales+1,x
+	  inc a
+	  sta bigscb2+SCB_HSIZE+1
+	  sta bigscb2+SCB_VSIZE+1
+	  lda scales,x
+	  asl a
+	  sta MATHD
+	  lda scales+1,x
+	  rol a
+	  sta MATHC
+
+	  lda xpos
+	  sta MATHB
+	  stz MATHA	; MULTIPLY
+
+	  sec
+	  lda #0
+	  WAITMATH
+	  sbc MATHG
+	  sta bigscb2+SCB_HPOS
+	  lda #0
+	  sbc MATHF
+	  sta bigscb2+SCB_HPOS+1
+
+	  lda ypos
+	  sta MATHB
+	  stz MATHA	; MULTIPLY
+
+	  sec
+	  lda #0
+	  WAITMATH
+	  sbc MATHG
+	  sta bigscb2+SCB_VPOS
+	  lda #0
+	  sbc MATHF
+	  sta bigscb2+SCB_VPOS+1
+
+.1a	    lda updateflag
+	   bne .1a
+	  jsr showbigscb2
+	  lda #1
+	  sta updateflag
+
+	  inc temp0
+	  lda temp0
+	  cmp #NUMSCALES
+	 bcc .1
+
+	jsr showbigscb2
+	jsr screentobigsprite
+
+	lda step
+	sta factor1
+	lda step+1
+	sta factor1+1
+	lda step+2
+	sta factor1+2
+	lda step+3
+	sta factor1+3
+	lda step+4
+	sta factor1+4
+	lda step+5
+	sta factor1+5
+	lda xpos
+	sta factor2
+	stz factor2+1
+	stz factor2+2
+	stz factor2+3
+	stz factor2+4
+	stz factor2+5
+	jsr domultiply
+
+	clc
+	lda acorner
+	adc product
+	sta acorner
+	lda acorner+1
+	adc product+1
+	sta acorner+1
+	lda acorner+2
+	adc product+2
+	sta acorner+2
+	lda acorner+3
+	adc product+3
+	sta acorner+3
+	lda acorner+4
+	adc product+4
+	sta acorner+4
+	lda acorner+5
+	adc product+5
+	sta acorner+5
+
+	lda ypos
+	sta factor2
+	jsr domultiply
+
+	clc
+	lda bcorner
+	adc product
+	sta bcorner
+	lda bcorner+1
+	adc product+1
+	sta bcorner+1
+	lda bcorner+2
+	adc product+2
+	sta bcorner+2
+	lda bcorner+3
+	adc product+3
+	sta bcorner+3
+	lda bcorner+4
+	adc product+4
+	sta bcorner+4
+	lda bcorner+5
+	adc product+5
+	sta bcorner+5
+
+	lsr step+5
+	ror step+4
+	ror step+3
+	ror step+2
+	ror step+1
+	ror step
+
+	stz modeflag
+	jsr resetpoint
+
+	rts
+
+
+zoom.out
+	lda step+5	; if step size already larger than 1, don't do it
+	beq .0
+	rts
+
+.0	lda #0
+.1	  sta temp0
+	  asl a
+	  tax
+	  lda scales+1,x
+	  lsr a
+	  lda scales,x
+	  ror a
+	  sta temp1
+	  sec
+	  lda #<$100
+	  sbc temp1
+	  sta bigscb2+SCB_HSIZE
+	  sta bigscb2+SCB_VSIZE
+	  lda #>$100
+	  sbc #0
+	  sta bigscb2+SCB_HSIZE+1
+	  sta bigscb2+SCB_VSIZE+1
+
+	  lda scales,x
+	  sta MATHD
+	  lda scales+1,x
+	  sta MATHC
+
+	  lda xpos
+	  sta MATHB
+	  stz MATHA	; MULTIPLY
+
+	  WAITMATH
+	  lda MATHG
+	  sta bigscb2+SCB_HPOS
+	  lda MATHF
+	  sta bigscb2+SCB_HPOS+1
+
+	  lda ypos
+	  sta MATHB
+	  stz MATHA	; MULTIPLY
+
+	  WAITMATH
+	  lda MATHG
+	  sta bigscb2+SCB_VPOS
+	  lda MATHF
+	  sta bigscb2+SCB_VPOS+1
+
+.1a	    lda updateflag
+	   bne .1a
+	  jsr showbigscb3
+	  lda #1
+	  sta updateflag
+
+	  inc temp0
+	  lda temp0
+	  cmp #NUMSCALES
+	 bcc .1
+
+	jsr showbigscb3
+	jsr screentobigsprite
+
+	asl step
+	rol step+1
+	rol step+2
+	rol step+3
+	rol step+4
+	rol step+5
+
+	lda step
+	sta factor1
+	lda step+1
+	sta factor1+1
+	lda step+2
+	sta factor1+2
+	lda step+3
+	sta factor1+3
+	lda step+4
+	sta factor1+4
+	lda step+5
+	sta factor1+5
+	lda xpos
+	sta factor2
+	stz factor2+1
+	stz factor2+2
+	stz factor2+3
+	stz factor2+4
+	stz factor2+5
+	jsr domultiply
+
+	sec
+	lda acorner
+	sbc product
+	sta acorner
+	lda acorner+1
+	sbc product+1
+	sta acorner+1
+	lda acorner+2
+	sbc product+2
+	sta acorner+2
+	lda acorner+3
+	sbc product+3
+	sta acorner+3
+	lda acorner+4
+	sbc product+4
+	sta acorner+4
+	lda acorner+5
+	sbc product+5
+	sta acorner+5
+
+	lda ypos
+	sta factor2
+	jsr domultiply
+
+	sec
+	lda bcorner
+	sbc product
+	sta bcorner
+	lda bcorner+1
+	sbc product+1
+	sta bcorner+1
+	lda bcorner+2
+	sbc product+2
+	sta bcorner+2
+	lda bcorner+3
+	sbc product+3
+	sta bcorner+3
+	lda bcorner+4
+	sbc product+4
+	sta bcorner+4
+	lda bcorner+5
+	sbc product+5
+	sta bcorner+5
+
+	stz modeflag
+	jsr resetpoint
+
+	rts
+
+
+
+myeof
+	phy
+	 inc frame
+
+
+	 lda cursorscb+SCB_PALETTE-4
+	 inc a
+	 and #$0f
+	 sta cursorscb+SCB_PALETTE-4
+
+	 lda updateflag
+	 beq .3
+	 dec updateflag
+
+.3	 inc cyclecount
+	 lda cyclecount
+	 cmp cyclerate
+	 bcc .0
+	 stz cyclecount
+
+	 lda cyclemode
+	 beq .0
+	 dec a
+	 beq .1
+	 dec a
+	 beq .2
+
+
+.1	 lda GREENE
+	 pha
+	  lda BLUEREDE
+	  pha
+	   ldy #13
+.1a	     lda GREEN0,y
+	     sta GREEN1,y
+	     lda BLUERED0,y
+	     sta BLUERED1,y
+	     dey
+	    bpl .1a
+	  pla
+	  sta BLUERED0
+	 pla
+	 sta GREEN0
+	 bra .0
+
+
+.2	 lda GREEN0
+	 pha
+	  lda BLUERED0
+	  pha
+	   ldy #0
+.2a	     lda GREEN1,y
+	     sta GREEN0,y
+	     lda BLUERED1,y
+	     sta BLUERED0,y
+	     iny
+	     cpy #14
+	    bcc .2a
+	  pla
+	  sta BLUEREDE
+	 pla
+	 sta GREENE
+;	 bra .0
+
+
+.0	 GETJOY
+	 tay
+	 eor #$ff
+	 ora input
+	 eor #$ff
+	 sta edgeinput
+	 tsb edgeinputlatch
+	 tya
+	 sta input
+	 GETSWITCH
+	 and #PAUSE_SWITCH
+	 tsb edgeinputlatch
+
+	ply
+
+myeofendexit
+	jmp rts0	; mod
+
+
+setpalette
+	stz cyclemode
+
+	stz ind0+1
+	lda palettenum
+	asl a
+	rol ind0+1
+	asl a
+	rol ind0+1
+	asl a
+	rol ind0+1
+	asl a
+	rol ind0+1
+	asl a
+	rol ind0+1
+	adc #<palettes
+	sta ind0
+	lda ind0+1
+	adc #>palettes
+	sta ind0+1
+	ldy #31
+.0	  lda (ind0),y
+	  sta GREEN0,y
+	  dey
+	 bpl .0
+
+	rts
+
+
+showmenu
+	lda palettenum
+	cmp #$f0
+	bcc .00
+	lda #NUMPALETTES-1
+	sta palettenum
+.00	cmp #NUMPALETTES
+	bcc .01
+	stz palettenum
+
+.01	jsr setpalette
+
+	ldx #0
+	ldy juliaflag
+	beq .10
+	ldy #title2-title1
+.10	  lda title1,y
+	  sta menu,x
+	  iny
+	  inx
+	  cpx #TITLELEN
+	 bcc .10
+
+	ldx #<m1
+	ldy #>m1
+	lda acorner+5
+	jsr putbyte.xy
+	jsr inc.ind0
+	lda acorner+4
+	jsr putbyte
+	lda acorner+3
+	jsr putbyte
+	lda acorner+2
+	jsr putbyte
+	lda acorner+1
+	jsr putbyte
+	lda acorner
+	jsr putbyte
+
+	ldx #<m2
+	ldy #>m2
+	lda bcorner+5
+	jsr putbyte.xy
+	jsr inc.ind0
+	lda bcorner+4
+	jsr putbyte
+	lda bcorner+3
+	jsr putbyte
+	lda bcorner+2
+	jsr putbyte
+	lda bcorner+1
+	jsr putbyte
+	lda bcorner
+	jsr putbyte
+
+	ldx #<m3
+	ldy #>m3
+	lda step+5
+	jsr putbyte.xy
+	jsr inc.ind0
+	lda step+4
+	jsr putbyte
+	lda step+3
+	jsr putbyte
+	lda step+2
+	jsr putbyte
+	lda step+1
+	jsr putbyte
+	lda step
+	jsr putbyte
+
+	ldx #<m4
+	ldy #>m4
+	lda depth+1
+	jsr putbyte.xy
+	lda depth
+	jsr putbyte
+
+	ldx #<m5
+	ldy #>m5
+	lda palettenum
+	jsr putbyte.xy
+
+	ldx #<m6
+	ldy #>m6
+	lda cyclerate
+	jsr putbyte.xy
+
+	ldx #<m7
+	ldy #>m7
+	lda xjul+5
+	jsr putbyte.xy
+	jsr inc.ind0
+	lda xjul+4
+	jsr putbyte
+	lda xjul+3
+	jsr putbyte
+	lda xjul+2
+	jsr putbyte
+	lda xjul+1
+	jsr putbyte
+	lda xjul
+	jsr putbyte
+
+	ldx #<m8
+	ldy #>m8
+	lda yjul+5
+	jsr putbyte.xy
+	jsr inc.ind0
+	lda yjul+4
+	jsr putbyte
+	lda yjul+3
+	jsr putbyte
+	lda yjul+2
+	jsr putbyte
+	lda yjul+1
+	jsr putbyte
+	lda yjul
+	jsr putbyte
+
+	jsr showbigsprite
+
+	lda #5
+	sta textscb+SCB_HPOS
+	lda #3
+	sta textscb+SCB_VPOS
+
+	ldx #<menu
+	ldy #>menu
+	jsr showmessage
+
+	ldy whichdigit
+	lda digitxpos,y
+	sta cursorscb+SCB_HPOS
+	lda digitypos,y
+	sta cursorscb+SCB_VPOS
+
+	ldx #<cursorscb
+	ldy #>cursorscb
+	jsr reshowsprites
+
+	rts
+
+
+
+
+showresult
+	jsr showbigsprite
+
+	lda xpos
+	sta box1scb+SCB_HPOS
+	sta box2scb+SCB_HPOS
+	sta box3scb+SCB_HPOS
+	clc
+	adc #79
+	sta box4scb+SCB_HPOS
+
+	lda ypos
+	sta box1scb+SCB_VPOS
+	sta box3scb+SCB_VPOS
+	sta box4scb+SCB_VPOS
+	clc
+	adc #50
+	sta box2scb+SCB_VPOS
+
+	jsr showbox
+
+	rts
+
+
+showbox
+	ldx #<box1scb
+	ldy #>box1scb
+	jmp reshowsprites
+
+
+showbigsprite
+	ldx #<bigscb
+	ldy #>bigscb
+	jmp showsprites
+
+
+showbigscb2
+	ldx #<bigscb2
+	ldy #>bigscb2
+	jsr showsprites
+	jmp do.dbuf
+
+
+showbigscb3
+	ldx #<erasescb
+	ldy #>erasescb
+	jsr showsprites
+	ldx #<bigscb2
+	ldy #>bigscb2
+	jsr reshowsprites
+	jmp do.dbuf
+
+
+screentobigsprite
+	lda #<screen0
+	sta ind0
+	lda #>screen0
+	sta ind0+1
+	lda #<{bigsprite+1}
+	sta ind1
+	lda #>{bigsprite+1}
+	sta ind1+1
+	ldx #102
+
+.0	  ldy #79
+.1	    lda (ind0),y
+	    sta (ind1),y
+	    dey
+	   bpl .1
+	  clc
+	  lda ind0
+	  adc #<80
+	  sta ind0
+	  lda ind0+1
+	  adc #>80
+	  sta ind0+1
+	  lda ind1
+	  adc #<82
+	  sta ind1
+	  lda ind1+1
+	  adc #>82
+	  sta ind1+1
+	  dex
+	 bne .0
+
+	rts
+
+
+showsprites
+	lda RenderBuffer
+	sta VIDBASL
+	lda RenderBuffer+1
+	sta VIDBASH
+
+reshowsprites
+	stx SCBNEXTL
+	sty SCBNEXTH
+
+	lda #1
+	sta SPRGO
+	WAITSUZY
+
+	rts
+
+
+; plotpoint - plot a point on the handy screen
+; on input:
+;	X - x coordinate
+;	Y - y coordinate
+;	A - color to plot
+plotpoint
+	pha
+	 sty MATHD	; stz MATHC
+	 lda #82
+	 sta MATHB
+	 stz MATHA	; MULTIPLY
+
+	 clc
+	 lda #<{bigsprite+1}
+	 WAITMATH
+	 adc MATHH
+	 sta ind0
+	 lda #>{bigsprite+1}
+	 adc MATHG
+	 sta ind0+1
+	 txa
+	 lsr a
+	 tay
+	 lda #0
+	 rol a
+	 tax
+	pla
+	eor (ind0),y
+	and nybblemask,x
+	eor (ind0),y
+	sta (ind0),y
+
+	rts
+
+
+initbigsprite
+	lda #<bigsprite
+	sta ind0
+	lda #>bigsprite
+	sta ind0+1
+	ldx #102
+	ldy #81
+.0	  lda #$f0		; clear out last byte on row
+	  sta (ind0),y
+	  lda #82		; set offest pointer at beginning of row
+	  sta (ind0)
+	  clc
+	  adc ind0
+	  sta ind0
+	  bcc .0a
+	  inc ind0+1
+.0a	  dex
+	 bne .0
+
+	lda #0			; mark the end of the sprite
+	sta (ind0)
+
+	jmp showbigsprite	; rts
+
+
+dosquare
+	stz negflag
+	lda factor1+5
+	bpl .1
+	sec
+	lda #0
+	sbc factor1
+	sta factor1
+	lda #0
+	sbc factor1+1
+	sta factor1+1
+	lda #0
+	sbc factor1+2
+	sta factor1+2
+	lda #0
+	sbc factor1+3
+	sta factor1+3
+	lda #0
+	sbc factor1+4
+	sta factor1+4
+	lda #0
+	sbc factor1+5
+	sta factor1+5
+.1	lda factor1
+	sta factor2
+	lda factor1+1
+	sta factor2+1
+	lda factor1+2
+	sta factor2+2
+	lda factor1+3
+	sta factor2+3
+	lda factor1+4
+	sta factor2+4
+	lda factor1+5
+	sta factor2+5
+
+	bra dom.2
+
+
+domultiply
+	stz negflag
+	lda factor1+5
+	bpl dom.1
+	sec
+	lda #0
+	sbc factor1
+	sta factor1
+	lda #0
+	sbc factor1+1
+	sta factor1+1
+	lda #0
+	sbc factor1+2
+	sta factor1+2
+	lda #0
+	sbc factor1+3
+	sta factor1+3
+	lda #0
+	sbc factor1+4
+	sta factor1+4
+	lda #0
+	sbc factor1+5
+	sta factor1+5
+	inc negflag
+
+dom.1
+	lda factor2+5
+	bpl dom.2
+	sec
+	lda #0
+	sbc factor2
+	sta factor2
+	lda #0
+	sbc factor2+1
+	sta factor2+1
+	lda #0
+	sbc factor2+2
+	sta factor2+2
+	lda #0
+	sbc factor2+3
+	sta factor2+3
+	lda #0
+	sbc factor2+4
+	sta factor2+4
+	lda #0
+	sbc factor2+5
+	sta factor2+5
+	inc negflag
+
+dom.2
+	lda factor1	; A0*B0
+	sta MATHD
+	lda factor1+1
+	sta MATHC
+	lda factor2
+	sta MATHB
+	lda factor2+1
+	sta MATHA	; MULTIPLY
+
+	WAITMATH
+
+	lda MATHH
+	sta product
+	lda MATHG
+	sta product+1
+	lda MATHF
+	sta MATHM
+	lda MATHE
+	sta MATHL
+	stz MATHK	; stz MATHJ
+
+	ldx #0		; prepare to accumulate overflows
+	lda factor2+2	; A0*B1
+	sta MATHB
+	lda factor2+3
+	sta MATHA	; MULTIPLY
+
+	WAITMATH
+
+	lda factor2	; B0*A1
+	sta MATHD
+	lda factor2+1
+	sta MATHC
+	lda factor1+2
+	sta MATHB
+	lda factor1+3
+	sta MATHA	; MULTIPLY
+
+	lda #MATHCARRY
+	WAITMATH
+	beq .00		; get overflow state in x
+	inx
+
+.00	lda MATHM
+	sta product+2
+	lda MATHL
+	sta product+3
+	lda MATHK
+	sta MATHM
+	lda MATHJ
+	sta MATHL
+	stx MATHK	; stz MATHJ
+
+	ldx #0		; prepare to accumulate overflows
+	lda factor1+4	; B0*A2
+	sta MATHB
+	lda factor1+5
+	sta MATHA	; MULTIPLY
+
+	WAITMATH
+
+	lda factor2+2	; B1*A1
+	sta MATHD
+	lda factor2+3
+	sta MATHC
+	lda factor1+2
+	sta MATHB
+	lda factor1+3
+	sta MATHA	; MULTIPLY
+
+	lda #MATHCARRY
+	WAITMATH
+	beq .01
+	inx
+
+.01	lda factor2+4	; B2*A0
+	sta MATHD
+	lda factor2+5
+	sta MATHC
+	lda factor1
+	sta MATHB
+	lda factor1+1
+	sta MATHA	; MULTIPLY
+
+	lda #MATHCARRY
+	WAITMATH
+	beq .02
+	inx
+
+.02	lda MATHM
+	sta product+4
+	lda MATHL
+	sta product+5
+	lda MATHK
+	sta MATHM
+	lda MATHJ
+	sta MATHL
+	stx MATHK	; stz MATHJ
+
+	ldx #0		; prepare to accumulate overflows
+	lda factor1+2	; B2*A1
+	sta MATHB
+	lda factor1+3
+	sta MATHA	; MULTIPLY
+
+	lda #MATHCARRY
+	WAITMATH
+	beq .03
+	inx
+
+.03	lda factor1+4	; A2*B1
+	sta MATHD
+	lda factor1+5
+	sta MATHC
+	lda factor2+2
+	sta MATHB
+	lda factor2+3
+	sta MATHA	; MULTIPLY
+
+	lda #MATHCARRY
+	WAITMATH
+	beq .04
+	inx
+
+.04	lda MATHM
+	sta product+6
+	lda MATHL
+	sta product+7
+	lda MATHK
+	sta MATHM
+	lda MATHJ
+	sta MATHL
+	stx MATHK	; stz MATHJ
+
+	lda factor2+4	; A2*B2
+	sta MATHB
+	lda factor2+5
+	sta MATHA	; MULTPLY
+
+	WAITMATH
+
+	lda MATHM
+	sta product+8
+	lda MATHL
+	sta product+9
+	lda MATHK
+	sta product+10
+	lda MATHJ
+	sta product+11
+
+
+	lsr negflag
+	bcc .30
+	lda #0
+	sbc product
+	sta product
+	lda #0
+	sbc product+1
+	sta product+1
+	lda #0
+	sbc product+2
+	sta product+2
+	lda #0
+	sbc product+3
+	sta product+3
+	lda #0
+	sbc product+4
+	sta product+4
+	lda #0
+	sbc product+5
+	sta product+5
+	lda #0
+	sbc product+6
+	sta product+6
+	lda #0
+	sbc product+7
+	sta product+7
+	lda #0
+	sbc product+8
+	sta product+8
+	lda #0
+	sbc product+9
+	sta product+9
+	lda #0
+	sbc product+10
+	sta product+10
+	lda #0
+	sbc product+11
+	sta product+11
+
+.30	rts
+
+
+initbrot
+	lda #4
+	sta cyclerate
+
+	lda #<COUNTMAX
+	sta depth
+	lda #>COUNTMAX
+	sta depth+1	; fall into resetbrot
+
+resetbrot
+	lda #<{-2}
+	stz acorner
+	stz acorner+1
+	stz acorner+2
+	stz acorner+3
+	stz acorner+4
+	sta acorner+5
+	stz bcorner
+	stz bcorner+1
+	stz bcorner+2
+	stz bcorner+3
+	stz bcorner+4
+	sta bcorner+5
+	lda #8
+	stz step
+	stz step+1
+	stz step+2
+	stz step+3
+	sta step+4
+	stz step+5	; fall into resetpoint
+
+resetpoint
+	stz xindex
+	stz yindex
+
+	lda acorner
+	sta x0
+	lda acorner+1
+	sta x0+1
+	lda acorner+2
+	sta x0+2
+	lda acorner+3
+	sta x0+3
+	lda acorner+4
+	sta x0+4
+	lda acorner+5
+	sta x0+5
+	lda bcorner
+	sta y0
+	lda bcorner+1
+	sta y0+1
+	lda bcorner+2
+	sta y0+2
+	lda bcorner+3
+	sta y0+3
+	lda bcorner+4
+	sta y0+4
+	lda bcorner+5
+	sta y0+5
+
+	rts
+
+
+copyjulia
+	lda acorner
+	sta xjul
+	lda acorner+1
+	sta xjul+1
+	lda acorner+2
+	sta xjul+2
+	lda acorner+3
+	sta xjul+3
+	lda acorner+4
+	sta xjul+4
+	lda acorner+5
+	sta xjul+5
+
+	lda bcorner
+	sta yjul
+	lda bcorner+1
+	sta yjul+1
+	lda bcorner+2
+	sta yjul+2
+	lda bcorner+3
+	sta yjul+3
+	lda bcorner+4
+	sta yjul+4
+	lda bcorner+5
+	sta yjul+5
+
+	rts
+
+
+dopoint
+	stz count
+	stz count+1
+	stz countmod15
+
+	lda x0
+	sta xn
+	lda x0+1
+	sta xn+1
+	lda x0+2
+	sta xn+2
+	lda x0+3
+	sta xn+3
+	lda x0+4
+	sta xn+4
+	lda x0+5
+	sta xn+5
+	lda y0
+	sta yn
+	lda y0+1
+	sta yn+1
+	lda y0+2
+	sta yn+2
+	lda y0+3
+	sta yn+3
+	lda y0+4
+	sta yn+4
+	lda y0+5
+	sta yn+5
+
+.0	  lda xn
+	  sta factor1
+	  lda xn+1
+	  sta factor1+1
+	  lda xn+2
+	  sta factor1+2
+	  lda xn+3
+	  sta factor1+3
+	  lda xn+4
+	  sta factor1+4
+	  lda xn+5
+	  sta factor1+5
+	  jsr dosquare
+
+	  lda product+5
+	  sta xsquare
+	  lda product+6
+	  sta xsquare+1
+	  lda product+7
+	  sta xsquare+2
+	  lda product+8
+	  sta xsquare+3
+	  lda product+9
+	  sta xsquare+4
+	  lda product+10
+	  sta xsquare+5
+
+	  lda yn
+	  sta factor1
+	  lda yn+1
+	  sta factor1+1
+	  lda yn+2
+	  sta factor1+2
+	  lda yn+3
+	  sta factor1+3
+	  lda yn+4
+	  sta factor1+4
+	  lda yn+5
+	  sta factor1+5
+	  jsr dosquare
+
+	  lda product+5
+	  sta ysquare
+	  lda product+6
+	  sta ysquare+1
+	  lda product+7
+	  sta ysquare+2
+	  lda product+8
+	  sta ysquare+3
+	  lda product+9
+	  sta ysquare+4
+	  lda product+10
+	  sta ysquare+5
+
+	  clc
+	  lda xsquare
+	  adc ysquare
+	  lda xsquare+1
+	  adc ysquare+1
+	  lda xsquare+2
+	  adc ysquare+2
+	  lda xsquare+3
+	  adc ysquare+3
+	  lda xsquare+4
+	  adc ysquare+4
+	  lda xsquare+5
+	  adc ysquare+5
+	  cmp #4
+	  bcc .0a
+	  jmp .1
+
+.0a	  stz negflag
+	  lda yn+5
+	  bpl .0b
+	  inc negflag
+.0b	  lda xn
+	  sta factor2
+	  lda xn+1
+	  sta factor2+1
+	  lda xn+2
+	  sta factor2+2
+	  lda xn+3
+	  sta factor2+3
+	  lda xn+4
+	  sta factor2+4
+	  lda xn+5
+	  sta factor2+5
+	  jsr dom.1
+
+	  ldx juliaflag
+	  beq .0f
+	  ldx #xjul-x0
+
+.0f	  lda product+5
+	  asl a
+	  sta yn
+	  lda product+6
+	  rol a
+	  sta yn+1
+	  lda product+7
+	  rol a
+	  sta yn+2
+	  lda product+8
+	  rol a
+	  sta yn+3
+	  lda product+9
+	  rol a
+	  sta yn+4
+	  lda product+10
+	  rol a
+	  sta yn+5
+	  clc
+	  lda yn
+	  adc y0,x
+	  sta yn
+	  lda yn+1
+	  adc y0+1,x
+	  sta yn+1
+	  lda yn+2
+	  adc y0+2,x
+	  sta yn+2
+	  lda yn+3
+	  adc y0+3,x
+	  sta yn+3
+	  lda yn+4
+	  adc y0+4,x
+	  sta yn+4
+	  lda yn+5
+	  adc y0+5,x
+	  sta yn+5
+
+	  sec
+	  lda xsquare
+	  sbc ysquare
+	  sta xn
+	  lda xsquare+1
+	  sbc ysquare+1
+	  sta xn+1
+	  lda xsquare+2
+	  sbc ysquare+2
+	  sta xn+2
+	  lda xsquare+3
+	  sbc ysquare+3
+	  sta xn+3
+	  lda xsquare+4
+	  sbc ysquare+4
+	  sta xn+4
+	  lda xsquare+5
+	  sbc ysquare+5
+	  sta xn+5
+	  clc
+	  lda xn
+	  adc x0,x
+	  sta xn
+	  lda xn+1
+	  adc x0+1,x
+	  sta xn+1
+	  lda xn+2
+	  adc x0+2,x
+	  sta xn+2
+	  lda xn+3
+	  adc x0+3,x
+	  sta xn+3
+	  lda xn+4
+	  adc x0+4,x
+	  sta xn+4
+	  lda xn+5
+	  adc x0+5,x
+	  sta xn+5
+
+	  ldx countmod15
+	  inx
+	  cpx #15
+	  bcc .0c
+	  ldx #0
+.0c	  stx countmod15
+
+	  inc count
+	  bne .0d
+	  inc count+1
+
+.0d	  lda count
+	  cmp depth
+	  lda count+1
+	  sbc depth+1
+	  bcc .0e
+	  lda #15
+	  sta countmod15
+	  bra .1
+
+.0e	 jmp .0
+
+.1	ldx countmod15
+	lda doublenybble,x
+	ldx xindex
+	ldy yindex
+	jsr plotpoint
+
+	rts
+
+
+incpoint
+	clc
+	lda x0
+	adc step
+	sta x0
+	lda x0+1
+	adc step+1
+	sta x0+1
+	lda x0+2
+	adc step+2
+	sta x0+2
+	lda x0+3
+	adc step+3
+	sta x0+3
+	lda x0+4
+	adc step+4
+	sta x0+4
+	lda x0+5
+	adc step+5
+	sta x0+5
+
+	inc xindex
+	lda xindex
+	cmp #160
+	bcc .0
+	lda acorner
+	sta x0
+	lda acorner+1
+	sta x0+1
+	lda acorner+2
+	sta x0+2
+	lda acorner+3
+	sta x0+3
+	lda acorner+4
+	sta x0+4
+	lda acorner+5
+	sta x0+5
+	stz xindex
+
+	clc
+	lda y0
+	adc step
+	sta y0
+	lda y0+1
+	adc step+1
+	sta y0+1
+	lda y0+2
+	adc step+2
+	sta y0+2
+	lda y0+3
+	adc step+3
+	sta y0+3
+	lda y0+4
+	adc step+4
+	sta y0+4
+	lda y0+5
+	adc step+5
+	sta y0+5
+
+	inc yindex
+	lda yindex
+	cmp #102
+	bcc .0
+	lda bcorner
+	sta y0
+	lda bcorner+1
+	sta y0+1
+	lda bcorner+2
+	sta y0+2
+	lda bcorner+3
+	sta y0+3
+	lda bcorner+4
+	sta y0+4
+	lda bcorner+5
+	sta y0+5
+	stz yindex
+
+.0	rts
+
+
+myprint
+	pha
+	 stx sysptr
+	 sty sysptr+1
+	 lda #<textbuffer
+	 sta TextPtr
+	 lda #>textbuffer
+	 sta TextPtr+1
+
+	 jsr HandyPrint
+
+	 dec textscb+SCB_HPOS
+	 lda #$0f
+	 sta textscb+SCB_PALETTE-4
+	 jsr showtextsprite
+
+	 inc textscb+SCB_HPOS
+	 dec textscb+SCB_VPOS
+	 jsr showtextsprite
+
+	 inc textscb+SCB_HPOS
+	 inc textscb+SCB_VPOS
+	 jsr showtextsprite
+
+	 dec textscb+SCB_HPOS
+	 inc textscb+SCB_VPOS
+	 jsr showtextsprite
+
+	 dec textscb+SCB_VPOS
+
+	pla
+	sta textscb+SCB_PALETTE-4
+;	jmp showtextsprite	; rts
+
+
+showtextsprite
+	ldx #<textscb
+	ldy #>textscb
+	jmp reshowsprites	; rts
+
+
+showmessage
+.1a	  lda #$0e
+	  jsr myprint
+	  clc
+	  lda textscb+SCB_VPOS
+	  adc #10
+	  sta textscb+SCB_VPOS
+	  ldy #1
+	  lda (sysptr),y
+	  bmi .4
+	  ldy sysptr+1
+	  ldx sysptr
+	  inx
+	  bne .1a
+	  iny
+	 bra .1a
+
+.4	rts
+
+
+putbyte.xy
+	stx ind0
+	sty ind0+1
+
+putbyte
+	pha
+	 lsr a
+	 lsr a
+	 lsr a
+	 lsr a
+	 jsr putdigit
+	pla
+	and #$f
+
+putdigit
+	cmp #10
+	bcc .0
+	clc
+	adc #"A"-"0"-10
+.0	clc
+	adc #"0"
+
+	sta (ind0)
+
+inc.ind0
+	inc ind0
+	bne .ff
+	inc ind0+1
+
+.ff	rts
+
+
+menuinput
+	GETJOY
+	tay
+	eor #$ff
+	ora stick
+	eor #$ff
+	sta edgestick
+	tya
+	sta stick
+	beq .aa
+	lda #1
+	sta modeflag
+.aa	GETSWITCH
+	sta switch
+
+	lda edgestick
+	bit #JOY_LEFT
+	beq .00
+	jsr cursorleft
+
+.00	lda edgestick
+	bit #JOY_RIGHT
+	beq .10
+	jsr cursorright
+
+.10	lda edgestick
+	bit #JOY_UP
+	beq .20
+	jsr cursorup
+
+.20	lda edgestick
+	bit #JOY_DOWN
+	beq .40
+	jsr cursordown
+
+.40	lda edgestick
+	bit #OUTER_BUTTON
+	beq .50
+	jsr inc.digit
+
+.50	lda edgestick
+	bit #INNER_BUTTON
+	beq .60
+	jsr dec.digit
+
+.60	lda edgestick
+	bit #OPTION1_BUTTON
+	beq .70
+	lda switch
+	bit #PAUSE_SWITCH
+	beq .65
+	jsr resetbrot
+	bra .70
+.65	stz modeflag
+
+.70	lda edgestick
+	bit #OPTION2_BUTTON
+	beq .80
+	lda switch
+	bit #PAUSE_SWITCH
+	beq .75
+	jsr copyjulia
+	jsr resetbrot
+	lda #$ff
+	sta juliaflag
+	bra .80
+.75	lda juliaflag
+	eor #$ff
+	sta juliaflag
+
+.80
+
+.ff	rts
+
+
+inc.digit
+	ldy whichdigit
+	lda moredigits,y
+	sta temp0
+	ldx digitaddr,y
+	lda #$11
+	and digitmask,y
+	clc
+	adc 0,x
+	sta 0,x
+
+	bcc .1
+.0	  dec temp0
+	  bmi .1
+	  inx
+	  inc 0,x
+	 beq .0
+
+.1	lda whichdigit
+	cmp #NUMIMPORTANTDIGITS
+	bcs .ff
+	jsr resetpoint
+
+.ff	rts
+
+dec.digit
+	ldy whichdigit
+	lda moredigits,y
+	sta temp0
+	ldx digitaddr,y
+	lda #$11
+	and digitmask,y
+	eor #$ff
+	sec
+	adc 0,x
+	sta 0,x
+
+	bcs .1
+.0	  dec temp0
+	  bmi .1
+	  inx
+	  dec 0,x
+	  lda 0,x
+	  cmp #$ff
+	 beq .0
+	  
+.1	lda whichdigit
+	cmp #NUMIMPORTANTDIGITS
+	bcs .ff
+	jsr resetpoint
+
+.ff	rts
+
+
+cursorleft
+	ldx whichdigit
+	beq .ff
+	dec whichdigit
+
+.ff	rts
+
+
+cursorright
+	ldx whichdigit
+	cpx #NUMDIGITS-1
+	bcs .ff
+	inc whichdigit
+
+.ff	rts
+
+
+cursorup
+	ldx whichdigit
+	lda updigit,x
+	sta whichdigit
+
+	rts
+
+
+cursordown
+	ldx whichdigit
+	lda downdigit,x
+	sta whichdigit
+
+	rts
+
+
+
+;==============================================================================
+
+; Data
+
+	#MACRO PALDEF
+	.BY $?0/256,$?1/256,$?2/256,$?3/256,$?4/256,$?5/256,$?6/256,$?7/256
+	.BY $?8/256,$?9/256,$?a/256,$?b/256,$?c/256,$?d/256,$?e/256,$?f/256
+	.BY <$?0,<$?1,<$?2,<$?3,<$?4,<$?5,<$?6,<$?7
+	.BY <$?8,<$?9,<$?a,<$?b,<$?c,<$?d,<$?e,<$?f
+	#ENDM
+
+palettes
+	PALDEF 241,482,6c3,804,a45,c86,ec7,008,249,48a,6cb,80c,a4d,c8e,ecf,000
+
+	PALDEF 111,222,333,444,555,666,777,888,999,aaa,bbb,ccc,ddd,eee,fff,000
+
+	PALDEF 614,c28,24c,85d,364,488,a9c,0a0,6c4,cd8,2ec,800,e14,428,a4c,000
+
+	PALDEF 00f,0f0,f00,00f,0f0,f00,00f,0f0,f00,00f,0f0,f00,00f,0f0,f00,000
+
+	PALDEF 003,060,900,00c,0f0,300,006,090,c00,00f,030,600,009,0c0,f00,000
+
+	PALDEF 003,006,009,00c,00f,030,060,090,0c0,0f0,300,600,900,c00,f00,000
+
+	PALDEF dde,aac,77a,558,337,115,003,001,003,115,337,558,77a,aac,dde,000
+	PALDEF ded,aca,7a7,585,373,151,030,010,030,151,373,585,7a7,aca,ded,000
+	PALDEF edd,caa,a77,855,733,511,300,100,300,511,733,855,a77,caa,edd,000
+
+	PALDEF eed,cca,aa7,885,773,551,330,110,330,551,773,885,aa7,cca,eed,000
+	PALDEF ede,cac,a7a,858,737,515,303,101,303,515,737,858,a7a,cac,ede,000
+	PALDEF dee,acc,7aa,588,377,155,033,011,033,155,377,588,7aa,acc,dee,000
+
+	PALDEF b16,c27,d38,e49,f5a,16b,27c,38d,49e,5af,6b1,7c2,8d3,9e4,af5,000
+
+NUMPALETTES .EQ {*-palettes}/32
+
+
+doublenybble
+	.HS 00112233445566778899aabbccddeeff
+
+nybblemask
+	.BY $f0,$0f
+
+
+scales
+	.DA $20, $40, $80, $a0, $c0, $e0, $100
+NUMSCALES .EQ {*-scales}/2
+
+
+
+erasescb
+	.BY FOUR_PER_PIXEL+BACKNONCOLL_SPRITE, RELOAD_HV+LITERAL, 0
+	.DA 0
+	.DA erasesprite
+	.DA 0, 0
+	.DA 160*256, 102*256
+	.HS ff
+
+erasesprite
+	.HS 020000
+
+
+bigscb
+	.BY FOUR_PER_PIXEL+BACKNONCOLL_SPRITE, RELOAD_HV+LITERAL, 0
+	.DA 0
+	.DA bigsprite
+	.DA 0, 0
+	.DA 1*256, 1*256
+	.HS 0123456789abcdef
+
+
+bigscb2
+	.BY FOUR_PER_PIXEL+BACKNONCOLL_SPRITE, RELOAD_HV+LITERAL, 0
+	.DA 0
+	.DA bigsprite
+	.DA 0, 0
+	.DA 2*256, 2*256
+	.HS 0123456789abcdef
+
+
+box1scb
+	.BY FOUR_PER_PIXEL+XOR_SPRITE, RELOAD_HV+LITERAL, 0
+	.DA box2scb
+	.DA erasesprite
+	.DA 0, 0
+	.DA 80*256, 1*256
+	.HS ff
+
+box2scb
+	.BY FOUR_PER_PIXEL+XOR_SPRITE, RELOAD_HV+LITERAL, 0
+	.DA box3scb
+	.DA erasesprite
+	.DA 0, 50
+	.DA 80*256, 1*256
+	.HS ff
+
+box3scb
+	.BY FOUR_PER_PIXEL+XOR_SPRITE, RELOAD_HV+LITERAL, 0
+	.DA box4scb
+	.DA erasesprite
+	.DA 0, 0
+	.DA 1*256, 51*256
+	.HS ff
+
+box4scb
+	.BY FOUR_PER_PIXEL+XOR_SPRITE, RELOAD_HV+LITERAL, 0
+	.DA 0
+	.DA erasesprite
+	.DA 79, 0
+	.DA 1*256, 51*256
+	.HS ff
+
+
+textscb
+	.BY ONE_PER_PIXEL+NONCOLL_SPRITE, RELOAD_HV+LITERAL, 0
+	.DA 0
+	.DA textbuffer
+	.DA 0, 0
+	.DA $100, $100
+	.HS 20
+
+
+cursorscb
+	.BY ONE_PER_PIXEL+NONCOLL_SPRITE, RELOAD_HV, 0
+	.DA 0
+	.DA cursorsprite
+	.DA 0, 0
+	.DA $100, $100
+	.HS 01
+
+cursorsprite
+	.BY $02,$44
+	.BY $03,$c4,$04
+	.BY $03,$c4,$04
+	.BY $03,$c4,$04
+	.BY $03,$c4,$04
+	.BY $03,$c4,$04
+	.BY $03,$c4,$04
+	.BY $03,$c4,$04
+	.BY $03,$c4,$04
+	.BY $02,$44
+	.BY $00
+
+
+menu
+;	    "----+----1----+----"
+	.ZS "MANDELBROT EXPLORER"
+	.ZS "BY: STEPHEN LANDRUM"
+	.AS "X:    "
+m1	.ZS       "xx.xxxxxxxxxx"
+	.AS "Y:    "
+m2	.ZS       "xx.xxxxxxxxxx"
+	.AS "STEP: "
+m3	.ZS       "xx.xxxxxxxxxx"
+	.AS "DEPTH:         "
+m4	.ZS                "xxxx"
+	.AS "PALETTE:         "
+m5	.ZS                  "xx"
+	.AS "CYCLE RATE:      "
+m6	.ZS                  "xx"
+	.AS "XJUL: "
+m7	.ZS       "xx.xxxxxxxxxx"
+	.AS "YJUL: "
+m8	.ZS       "xx.xxxxxxxxxx"
+	.BY $ff
+
+title1	.AS "MANDELBROT EXPLORER"
+title2	.AS "JULIA SET EXPLORER "
+TITLELEN .EQ title2-title1
+
+digitxpos
+	.BY 52,60,76,84,92,100,108,116,124,132,140,148
+	.BY 52,60,76,84,92,100,108,116,124,132,140,148
+	.BY 52,60,76,84,92,100,108,116,124,132,140,148
+NUMIMPORTANTDIGITS .EQ *-digitxpos
+	.BY 124,132,140,148
+	.BY 140,148
+	.BY 140,148
+
+	.BY 52,60,76,84,92,100,108,116,124,132,140,148
+	.BY 52,60,76,84,92,100,108,116,124,132,140,148
+
+NUMDIGITS .EQ *-digitxpos
+
+digitypos
+	.BY 22,22,22,22,22,22,22,22,22,22,22,22
+	.BY 32,32,32,32,32,32,32,32,32,32,32,32
+	.BY 42,42,42,42,42,42,42,42,42,42,42,42
+	.BY 52,52,52,52
+	.BY 62,62
+	.BY 72,72
+	.BY 82,82,82,82,82,82,82,82,82,82,82,82
+	.BY 92,92,92,92,92,92,92,92,92,92,92,92
+
+
+digitaddr
+	.BY acorner+5,acorner+5,acorner+4,acorner+4,acorner+3,acorner+3
+	.BY acorner+2,acorner+2,acorner+1,acorner+1,acorner,acorner
+	.BY bcorner+5,bcorner+5,bcorner+4,bcorner+4,bcorner+3,bcorner+3
+	.BY bcorner+2,bcorner+2,bcorner+1,bcorner+1,bcorner,bcorner
+	.BY step+5,step+5,step+4,step+4,step+3,step+3
+	.BY step+2,step+2,step+1,step+1,step,step
+	.BY depth+1,depth+1,depth,depth
+	.BY palettenum,palettenum
+	.BY cyclerate,cyclerate
+	.BY xjul+5,xjul+5,xjul+4,xjul+4,xjul+3,xjul+3
+	.BY xjul+2,xjul+2,xjul+1,xjul+1,xjul,xjul
+	.BY yjul+5,yjul+5,yjul+4,yjul+4,yjul+3,yjul+3
+	.BY yjul+2,yjul+2,yjul+1,yjul+1,yjul,yjul
+
+digitmask
+	.HS f00ff00ff00ff00ff00ff00f
+	.HS f00ff00ff00ff00ff00ff00f
+	.HS f00ff00ff00ff00ff00ff00f
+	.HS f00ff00f
+	.HS f00f
+	.HS f00f
+	.HS f00ff00ff00ff00ff00ff00f
+	.HS f00ff00ff00ff00ff00ff00f
+
+digitinvmask
+	.HS 0ff00ff00ff00ff00ff00ff0
+	.HS 0ff00ff00ff00ff00ff00ff0
+	.HS 0ff00ff00ff00ff00ff00ff0
+	.HS 0ff00ff0
+	.HS 0ff0
+	.HS 0ff0
+	.HS 0ff00ff00ff00ff00ff00ff0
+	.HS 0ff00ff00ff00ff00ff00ff0
+
+moredigits
+	.BY 0,0,1,1,2,2,3,3,4,4,5,5
+	.BY 0,0,1,1,2,2,3,3,4,4,5,5
+	.BY 0,0,1,1,2,2,3,3,4,4,5,5
+	.BY 0,0,1,1
+	.BY 0,0
+	.BY 0,0
+	.BY 0,0,1,1,2,2,3,3,4,4,5,5
+	.BY 0,0,1,1,2,2,3,3,4,4,5,5
+
+updigit
+	.BY 0,1,2,3,4,5,6,7,8,9,10,11
+	.BY 0,1,2,3,4,5,6,7,8,9,10,11
+	.BY 12,13,14,15,16,17,18,19,20,21,22,23
+	.BY 32,33,34,35
+	.BY 38,39
+	.BY 40,41
+	.BY 42,42,42,42,42,42,42,42,42,42,42,43
+	.BY 44,45,46,47,48,49,50,51,52,53,54,55
+
+downdigit
+	.BY 12,13,14,15,16,17,18,19,20,21,22,23
+	.BY 24,25,26,27,28,29,30,31,32,33,34,35
+	.BY 36,36,36,36,36,36,36,36,36,37,38,39
+	.BY 40,40,40,41
+	.BY 42,43
+	.BY 54,55
+	.BY 56,57,58,59,60,61,62,63,64,65,66,67
+	.BY 56,57,58,59,60,61,62,63,64,65,66,67
+
+
+;==============================================================================
+
+
+
+
+

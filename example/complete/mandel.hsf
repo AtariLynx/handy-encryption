@@ -1,0 +1,11 @@
+* Test file for HandyROM
+* Created by RJ Mical
+* 26 April 1989
+
+	.IN cartdefs.i
+
+	FILE TITLE_FILE
+	BIN title.bin
+
+	FILE MAIN_FILE
+	BIN mandel.bin
